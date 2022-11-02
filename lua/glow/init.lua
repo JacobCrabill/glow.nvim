@@ -1,4 +1,5 @@
-local win, buf, job_id
+local buf, job_id
+local win = nil
 local glow = {}
 
 -- default configs
@@ -9,6 +10,7 @@ glow.config = {
   style = vim.o.background,
   mouse = false,
   pager = false,
+  use_float = false,
   width = 100,
   height = 100,
 }
@@ -17,14 +19,19 @@ local function close_window()
   vim.api.nvim_win_close(win, true)
 end
 
-local function tmp_file()
+local function tmp_file(name)
+  -- Get the contents of the current buffer
   local output = vim.api.nvim_buf_get_lines(0, 0, vim.api.nvim_buf_line_count(0), false)
   if vim.tbl_isempty(output) then
     vim.notify("buffer is empty", vim.log.levels.ERROR)
     return
   end
-  local tmp = vim.fn.tempname() .. ".md"
+
+  tmp = vim.fn.tempname() .. ".md"
+
+  -- Copy the contents of the file into the tmp file
   vim.fn.writefile(output, tmp)
+
   return tmp
 end
 
@@ -35,7 +42,54 @@ local function stop_job()
   vim.fn.jobstop(job_id)
 end
 
-local function open_window(cmd, tmp)
+local function open_window(cmd, file)
+  -- If we don't already have a preview window open, open one
+  local src_win = vim.api.nvim_get_current_win()
+  wins = vim.api.nvim_list_wins()
+  if #wins < 2 then
+    vim.cmd('vsplit')
+    wins = vim.api.nvim_list_wins()
+  end
+  win = wins[#wins]
+  vim.api.nvim_set_current_win(win)
+
+  -- Create an autocmd group for the auto-update (live preview)
+  grp = vim.api.nvim_create_augroup("GlowGrp", { clear = true })
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    pattern = "*.md",
+    command = ":Glow",
+    group = "GlowGrp",
+  })
+
+  -- Create a fresh buffer (delete existing if needed)
+  if buf ~= nil then
+    vim.api.nvim_win_set_buf(win, buf)
+    vim.cmd("Kwbd")
+  end
+  buf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_buf_attach(buf, false, {
+    on_detach = function()
+      buf = nil
+    end,
+  })
+
+  -- Create a tmp output dir (sorry, Linux only right now)
+  os.execute("mkdir -p /tmp/nvim/glow")
+  local cbs = {
+    on_exit = function()
+      vim.api.nvim_set_current_win(win)
+      -- Rename the term window to a temp file with a consistent name
+      vim.cmd("keepalt file /tmp/nvim/glow/output.mdp")
+      -- Why does this not work?
+      vim.api.nvim_set_current_win(src_win)
+    end,
+  }
+  job_id = vim.fn.termopen(cmd, cbs)
+end
+
+
+local function open_float_window(cmd, tmp)
   local width = vim.o.columns
   local height = vim.o.lines
   local win_height = math.ceil(height * 0.7)
@@ -187,12 +241,8 @@ local function execute(opts)
       return
     end
 
-    file = tmp_file()
-    if file == nil then
-      vim.notify("error on preview for current buffer", vim.log.levels.ERROR)
-      return
-    end
-    tmp = file
+    -- Buffer (file) name
+    filename = vim.api.nvim_buf_get_name(0)
   end
 
   stop_job()
@@ -203,9 +253,13 @@ local function execute(opts)
     table.insert(cmd_args, "-p")
   end
 
-  table.insert(cmd_args, file)
+  table.insert(cmd_args, filename)
   local cmd = table.concat(cmd_args, " ")
-  open_window(cmd, tmp)
+  if glow.config.use_float then
+    open_float_window(cmd, filename)
+  else
+    open_window(cmd, filename)
+  end
 end
 
 local function install_glow(opts)
